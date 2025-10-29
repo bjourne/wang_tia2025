@@ -1,20 +1,21 @@
-from PSActivation import (
-    replace_activation_with_Psactivation,
-)  # Import the function to replace activation with PsActivation
+from PSActivation import replace_activation_with_Psactivation
+from torch.nn import *
+from torch.nn.functional import mse_loss
 from utils import *
+
+
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
 
 # Define a neural network model with a single GELU activation
-class net(nn.Module):
+class net(Module):
     def __init__(self):
-        super(net, self).__init__()
-        self.act = nn.GELU()  # Initialize with GELU activation
+        super().__init__()
+        self.act = GELU()
 
     def forward(self, x):
-        x = self.act(x)  # Apply GELU activation
-        return x  # Return the activated input
+        return self.act(x)
 
 
 if __name__ == "__main__":
@@ -23,24 +24,25 @@ if __name__ == "__main__":
 
     # Replace GELU activation with PsActivation in the model
     replace_activation_with_Psactivation(
-        n, activation_name, "cpu", dy=0.001, l=-5, r=25
+        n, activation_name, "cpu", 0.005, -5, 25
     )
 
     # Create a linearly spaced tensor for input values
-    x = torch.linspace(-25, 25, 100000)
+    x = torch.linspace(-2, 2, 100000)
 
     # Calculate the output using the approximated PsActivation
-    y_gelu_approx = n(x)
+    yhat = n(x)
 
     # Calculate the output using the real GELU function
-    y_gelu_real = globals()[activation_name.lower()](x).clone().detach()
+    #ys = GELU()(x)
+    ys = globals()[activation_name.lower()](x).clone().detach()
 
     # Calculate the mean squared error between the real and approximated outputs
-    mse = torch.mean((y_gelu_real - y_gelu_approx) ** 2)
-    print(f"MSE: {mse}")  # Print the mean squared error
+    mse = mse_loss(yhat, ys)
+    print(f"MSE: {mse}")
 
     # Plot the real and approximated outputs for comparison
-    plt.plot(x, y_gelu_real, label="real")
-    plt.plot(x, y_gelu_approx, label="approx")
+    plt.plot(x, ys, label="real")
+    plt.plot(x, yhat, label="approx")
     plt.legend()
     plt.show()

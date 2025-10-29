@@ -1,15 +1,64 @@
+import json
 import torch
 import torch.nn as nn
-from ps_coding import ps  # Import custom ps function for spiking neural network coding
-from prepare_hdT import (
-    find_hdT,
-)  # Import function to find and prepare the high-dimensional T values
+
+
+from pathlib import Path
+#from ps_coding import ps  # Import custom ps function for spiking neural network coding
+from prepare_hdT import find_hdT
+from torch.nn import *
 from transformers.activations import (
     GELUActivation,
     NewGELUActivation,
     QuickGELUActivation,
 )
-import json
+
+from utils import *  # Import utility functions from utils module
+
+
+def ps(x, h, d, T, b, idx):
+    """
+    Perform a spiking operation on the input tensor.
+
+    Args:
+        x (torch.Tensor): The input tensor.
+        h (torch.Tensor): Tensor containing high-dimensional values.
+        d (torch.Tensor): Tensor containing step sizes for output.
+        T (torch.Tensor): Tensor containing threshold values.
+        b (float): Offset to be subtracted from the output.
+        idx (torch.Tensor): Indices for selecting elements from h.
+
+    Returns:
+        out (torch.Tensor): The output tensor after applying the spiking operation.
+        spikes (int): The total number of spikes (activation events) that occurred.
+    """
+    v = x.clone()  # Clone input tensor to maintain original values
+    z = torch.zeros_like(x)  # Initialize tensor to track spikes
+    out = torch.zeros_like(x)  # Initialize output tensor
+    t = 1  # Initialize time step counter
+    K = len(d) - 1  # Determine the number of steps
+    spikes = 0  # Initialize spike counter
+
+    while t <= K:
+        # Determine where input exceeds threshold and create spike indicators
+        z = torch.where(
+            v - T[t] >= 0,  # Compare input to threshold
+            torch.ones_like(v),  # Set 1 where condition is met
+            torch.zeros_like(v),  # Set 0 where condition is not met
+        )
+        out += z * d[t]  # Add step size to output where spikes occur
+        spikes += z.sum()  # Count total spikes
+
+        if t != K:
+            # Update input for next time step
+            v = h[idx, t + 1]
+
+        t += 1  # Move to next time step
+
+    out -= b  # Subtract the offset from the final output
+    return out, spikes  # Return the output and the spike count
+
+
 
 # Load configuration settings from a JSON file
 with open("config.json", "r") as f:
@@ -18,44 +67,41 @@ hdT_path = config["hdT_path"]  # Path for high-dimensional T values
 
 # Mapping of activation names to their corresponding classes
 activation_mapping = {
-    "ReLU": nn.ReLU,
-    "GELU": nn.GELU,
-    "SiLU": nn.SiLU,
+    "ReLU": ReLU,
+    "GELU": GELU,
+    "SiLU": SiLU,
     "GELUActivation": GELUActivation,
     "NewGELUActivation": NewGELUActivation,
     "QuickGELUActivation": QuickGELUActivation,
-    "Tanh": nn.Tanh,
-    "Sigmoid": nn.Sigmoid,
-    "Softmax": nn.Softmax,
-    "Softplus": nn.Softplus,
+    "Tanh": Tanh,
+    "Sigmoid": Sigmoid,
+    "Softmax": Softmax,
+    "Softplus": Softplus,
 }
 
 
-class PsActivation(nn.Module):
-    """
-    Custom activation module that uses PS coding for spiking neural networks.
-    """
-
-    def __init__(self, activation_name, device="cuda", dy=None, l=None, r=None):
+class PsActivation(Module):
+    def __init__(self, act_name, device, dy, l, r):
         super().__init__()
-        activation_name = (
-            activation_name.lower()
-        )  # Convert activation name to lowercase
-        if activation_name == "geluactivation":
-            activation_name = "gelu"  # Adjust name for consistency
+        act_name = act_name.lower()
+        if act_name == "geluactivation":
+            act_name = "gelu"  # Adjust name for consistency
 
         # Determine parameter file path based on input configuration
         if dy is not None:
-            self.param_path = f"{hdT_path}/{activation_name}_{dy}_{l}_{r}.pt"
+            fname = f"{act_name}_{dy}_{l}_{r}.pt"
         else:
-            self.param_path = f"{hdT_path}/{activation_name}.pt"
+            fname = f"{act_name}.pt"
+        self.param_path = Path(hdT_path) / fname
 
         # Load high-dimensional T parameters; if unavailable, generate them
         try:
-            self.hdT = torch.load(self.param_path)
-        except:
-            find_hdT(activation_name, dy, l, r)  # Generate and prepare hdT
-            self.hdT = torch.load(self.param_path)
+            self.hdT = torch.load(self.param_path, weights_only = False)
+        except Exception as err:
+            print("error", err)
+            # Generate and prepare hdT
+            find_hdT(act_name, dy, l, r)
+            self.hdT = torch.load(self.param_path, weights_only = False)
 
         # Load model parameters
         self.h = self.hdT["h"].to(device)
@@ -73,7 +119,7 @@ class PsActivation(nn.Module):
         r = self.hdT["r"]
 
         # Display activation settings and parameters
-        print(f"using ps activation: {activation_name}, dy: {dy}, l: {l}, r: {r}")
+        print(f"using ps activation: {act_name}, dy: {dy}, l: {l}, r: {r}")
         print(f"numh: {self.h.shape[0]}, K: {self.h.shape[1]-1}")
 
     def reset_count(self):
@@ -121,16 +167,12 @@ class PsActivation(nn.Module):
         return out
 
 
-def replace_activation_with_Psactivation(
-    module, activation_name, device="cuda", dy=None, l=None, r=None
-):
-    """
-    Replace standard activations with PS activations in a neural network module.
-    """
+def replace_activation_with_Psactivation(module, act_name, device, dy, l, r):
+    print("Working...")
     # Get the activation class based on the activation name
-    activation_class = activation_mapping.get(activation_name, None)
+    activation_class = activation_mapping.get(act_name, None)
     if activation_class is None:
-        raise ValueError(f"Activation function {activation_name} is not recognized.")
+        raise ValueError(f"Activation function {act_name} is not recognized.")
 
     # Iterate through child modules and replace activations
     for name, child in module.named_children():
@@ -138,12 +180,12 @@ def replace_activation_with_Psactivation(
             setattr(
                 module,
                 name,
-                PsActivation(activation_name, device=device, dy=dy, l=l, r=r),
+                PsActivation(act_name, device, dy, l, r)
             )
         else:
             # Recursively replace activations in nested modules
             replace_activation_with_Psactivation(
-                child, activation_name, device=device, dy=dy, l=l, r=r
+                child, act_name, device, dy=dy, l=l, r=r
             )
 
 

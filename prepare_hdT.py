@@ -1,18 +1,16 @@
 import numpy as np
 import json
-from utils import *  # Import utility functions from utils module
+from utils import *
 
-# Load configuration settings from a JSON file
 with open("config.json", "r") as f:
     config = json.load(f)
 
-
-def find_hdT(target_func_name, dy=None, l=None, r=None):
+def find_hdT(fun, dy, l, r):
     """
     Calculate high-dimensional T values for a given target function.
 
     Args:
-        target_func_name (str): The name of the target function.
+        fun (str): The name of the target function.
         dy (float, optional): Step size for selecting elements. Defaults to None.
         l (float, optional): Left boundary for input range. Defaults to None.
         r (float, optional): Right boundary for input range. Defaults to None.
@@ -20,10 +18,10 @@ def find_hdT(target_func_name, dy=None, l=None, r=None):
     Returns:
         hdT (dict): A dictionary containing the high-dimensional T parameters.
     """
-    print(f"Finding hdT for {target_func_name}...")
+    print(f"Finding hdT for {fun}...")
 
     # Retrieve the target function from the global namespace
-    target_func = globals()[target_func_name]
+    target_func = globals()[fun]
 
     # Get the path for storing hdT values
     hdT_path = config["hdT_path"]
@@ -33,9 +31,9 @@ def find_hdT(target_func_name, dy=None, l=None, r=None):
         dy = config["dy"]
         l = config["l"]
         r = config["r"]
-        save_path = f"{hdT_path}{target_func_name}.pt"  # Default save path
+        save_path = f"{hdT_path}{fun}.pt"  # Default save path
     else:
-        save_path = f"{hdT_path}{target_func_name}_{dy}_{l}_{r}.pt"  # Custom save path
+        save_path = f"{hdT_path}{fun}_{dy}_{l}_{r}.pt"  # Custom save path
 
     # Generate input range and apply the target function
     x = np.arange(l, r, 0.001)  # Create a range of input values
@@ -89,7 +87,6 @@ def find_hdT(target_func_name, dy=None, l=None, r=None):
         "num_h": len(h),
     }
 
-    # Save the hdT parameters to a file
     torch.save(hdT, save_path)
 
     # Print summary of the saved hdT parameters
@@ -103,4 +100,4 @@ def find_hdT(target_func_name, dy=None, l=None, r=None):
 
 if __name__ == "__main__":
     # Find and save hdT values for the sigmoid function
-    find_hdT("sigmoid")
+    find_hdT("sigmoid", None, None, None)
