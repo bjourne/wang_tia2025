@@ -4,19 +4,13 @@ import torch.nn as nn
 
 
 from pathlib import Path
-#from ps_coding import ps  # Import custom ps function for spiking neural network coding
 from prepare_hdT import find_hdT
 from torch.nn import *
-from transformers.activations import (
-    GELUActivation,
-    NewGELUActivation,
-    QuickGELUActivation,
-)
 
-from utils import *  # Import utility functions from utils module
+from utils import *
 
 
-def ps(x, h, d, T, b, idx):
+def ps(x, params, idx):
     """
     Perform a spiking operation on the input tensor.
 
@@ -32,31 +26,32 @@ def ps(x, h, d, T, b, idx):
         out (torch.Tensor): The output tensor after applying the spiking operation.
         spikes (int): The total number of spikes (activation events) that occurred.
     """
-    v = x.clone()  # Clone input tensor to maintain original values
-    z = torch.zeros_like(x)  # Initialize tensor to track spikes
-    out = torch.zeros_like(x)  # Initialize output tensor
-    t = 1  # Initialize time step counter
-    K = len(d) - 1  # Determine the number of steps
-    spikes = 0  # Initialize spike counter
+    h, d, T, b = params["h"], params["d"], params["T"], params["b"]
 
-    while t <= K:
-        # Determine where input exceeds threshold and create spike indicators
-        z = torch.where(
-            v - T[t] >= 0,  # Compare input to threshold
-            torch.ones_like(v),  # Set 1 where condition is met
-            torch.zeros_like(v),  # Set 0 where condition is not met
-        )
-        out += z * d[t]  # Add step size to output where spikes occur
-        spikes += z.sum()  # Count total spikes
+    print("T", T)
+    print("d", d)
+
+    print(x.shape)
+
+    v = x.clone()  # Clone input tensor to maintain original values
+
+    # Init to negative bias
+    out = torch.zeros_like(x) - b
+
+    K = len(d) - 1  # Determine the number of steps
+
+    ones = torch.ones_like(x)
+    zeros = torch.zeros_like(x)
+
+    for t in range(1, len(d)):
+        print(t, v)
+        out += (v - T[t] >= 0).float() * d[t]
 
         if t != K:
             # Update input for next time step
             v = h[idx, t + 1]
 
-        t += 1  # Move to next time step
-
-    out -= b  # Subtract the offset from the final output
-    return out, spikes  # Return the output and the spike count
+    return out
 
 
 
@@ -65,27 +60,12 @@ with open("config.json", "r") as f:
     config = json.load(f)
 hdT_path = config["hdT_path"]  # Path for high-dimensional T values
 
-# Mapping of activation names to their corresponding classes
-activation_mapping = {
-    "ReLU": ReLU,
-    "GELU": GELU,
-    "SiLU": SiLU,
-    "GELUActivation": GELUActivation,
-    "NewGELUActivation": NewGELUActivation,
-    "QuickGELUActivation": QuickGELUActivation,
-    "Tanh": Tanh,
-    "Sigmoid": Sigmoid,
-    "Softmax": Softmax,
-    "Softplus": Softplus,
-}
 
 
 class PsActivation(Module):
-    def __init__(self, act_name, device, dy, l, r):
+    def __init__(self, act_name, dy, l, r):
         super().__init__()
         act_name = act_name.lower()
-        if act_name == "geluactivation":
-            act_name = "gelu"  # Adjust name for consistency
 
         # Determine parameter file path based on input configuration
         if dy is not None:
@@ -103,16 +83,6 @@ class PsActivation(Module):
             find_hdT(act_name, dy, l, r)
             self.hdT = torch.load(self.param_path, weights_only = False)
 
-        # Load model parameters
-        self.h = self.hdT["h"].to(device)
-        self.d = self.hdT["d"].to(device)
-        self.T = self.hdT["T"].to(device)
-        self.b = self.hdT["b"]
-
-        # Initialize spike and neuron count
-        self.spike_count = 0
-        self.neruon_count = 0
-
         # Extract dy, l, r from hdT configuration
         dy = self.hdT["dy"]
         l = self.hdT["l"]
@@ -120,7 +90,6 @@ class PsActivation(Module):
 
         # Display activation settings and parameters
         print(f"using ps activation: {act_name}, dy: {dy}, l: {l}, r: {r}")
-        print(f"numh: {self.h.shape[0]}, K: {self.h.shape[1]-1}")
 
     def reset_count(self):
         """
@@ -135,7 +104,8 @@ class PsActivation(Module):
         """
         sp = x.shape  # Store original shape of input
         x_flat = x.view(-1)  # Flatten input for processing
-        _h = self.h[:, 0]  # Get the first column of h as reference points
+        # Get the first column of h as reference points
+        _h = self.hdT["h"][:, 0]
 
         # Find indices of closest points in h to elements in x
         idx = torch.searchsorted(_h, x_flat)
@@ -158,49 +128,8 @@ class PsActivation(Module):
         idx = nearest_idx.view(sp)
 
         # Apply ps function to compute output and spikes
-        out, spikes = ps(x, self.h, self.d, self.T, self.b, idx)
-
-        # Update spike and neuron count
-        self.spike_count += spikes
-        self.neruon_count += x.numel()
-
-        return out
-
-
-def replace_activation_with_Psactivation(module, act_name, device, dy, l, r):
-    print("Working...")
-    # Get the activation class based on the activation name
-    activation_class = activation_mapping.get(act_name, None)
-    if activation_class is None:
-        raise ValueError(f"Activation function {act_name} is not recognized.")
-
-    # Iterate through child modules and replace activations
-    for name, child in module.named_children():
-        if isinstance(child, activation_class):
-            setattr(
-                module,
-                name,
-                PsActivation(act_name, device, dy, l, r)
-            )
-        else:
-            # Recursively replace activations in nested modules
-            replace_activation_with_Psactivation(
-                child, act_name, device, dy=dy, l=l, r=r
-            )
-
-
-def count_neurons_and_spikes(model):
-    """
-    Count the total number of neurons and spikes in a model with PS activations.
-    """
-    spike_neuron_count = 0
-    total_spike_count = 0
-
-    # Iterate through model layers and accumulate counts from PS activations
-    for layer in model.modules():
-        if isinstance(layer, PsActivation):
-            spike_neuron_count += layer.neruon_count
-            total_spike_count += layer.spike_count
-            layer.reset_count()  # Reset count after reading
-
-    return spike_neuron_count, total_spike_count
+        return ps(
+            x,
+            self.hdT,
+            idx
+        )
