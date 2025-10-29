@@ -1,9 +1,15 @@
 import numpy as np
 import json
+
 from utils import *
+from scipy.optimize import fsolve
 
 with open("config.json", "r") as f:
     config = json.load(f)
+
+
+def inverse_f(f, y, b):
+    return torch.tensor(fsolve(lambda x: f(x) + b - y, 0)[0])
 
 def find_hdT(fun, dy, l, r):
     """
@@ -18,10 +24,8 @@ def find_hdT(fun, dy, l, r):
     Returns:
         hdT (dict): A dictionary containing the high-dimensional T parameters.
     """
-    print(f"Finding hdT for {fun}...")
-
-    # Retrieve the target function from the global namespace
-    target_func = globals()[fun]
+    name = fun.__name__
+    print(f"Finding hdT for {name}...")
 
     # Get the path for storing hdT values
     hdT_path = config["hdT_path"]
@@ -31,13 +35,13 @@ def find_hdT(fun, dy, l, r):
         dy = config["dy"]
         l = config["l"]
         r = config["r"]
-        save_path = f"{hdT_path}{fun}.pt"  # Default save path
+        save_path = f"{name}.pt"  # Default save path
     else:
-        save_path = f"{hdT_path}{fun}_{dy}_{l}_{r}.pt"  # Custom save path
+        save_path = f"{name}_{dy}_{l}_{r}.pt"  # Custom save path
 
     # Generate input range and apply the target function
     x = np.arange(l, r, 0.001)  # Create a range of input values
-    y = target_func(x)  # Apply the target function
+    y = fun(x)  # Apply the target function
 
     # Normalize y-values to start from zero
     m = np.min(y)
@@ -61,7 +65,7 @@ def find_hdT(fun, dy, l, r):
 
     # Calculate h and T values for each time step
     for t in range(1, K + 1):
-        v_at_t = np.array([inverse_f(target_func, i, b) for i in y])
+        v_at_t = np.array([inverse_f(fun, i, b) for i in y])
         h.append(v_at_t)
         mask = y > d[t]
         y[mask] -= d[t]
@@ -73,6 +77,7 @@ def find_hdT(fun, dy, l, r):
     T = torch.tensor(T, dtype=torch.float32)
 
     # Create a dictionary of high-dimensional T parameters
+    print("d is", d)
     hdT = {
         "h": h,
         "d": d,
@@ -93,11 +98,11 @@ def find_hdT(fun, dy, l, r):
     print(
         f"Saved hdT to {save_path}\ndy: {dy}\nK: {K}\ti_bit: {i_bit}\tf_bit: {f_bit}\nl: {l}\tr: {r}\tb: {b}\nnum_h: {len(h)}"
     )
-    print("Done.\n" + "-" * 50)
-
     return hdT
 
 
 if __name__ == "__main__":
     # Find and save hdT values for the sigmoid function
-    find_hdT("sigmoid", None, None, None)
+    find_hdT(sigmoid, None, None, None)
+
+    #print(inverse_f(lambda x: np.max(x, 0), 0, 0))
